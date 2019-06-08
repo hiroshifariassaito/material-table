@@ -5,8 +5,7 @@ export default class DataManager {
   applyFilters = false;
   applySearch = false;
   currentPage = 0;
-  detailPanelType = 'multiple'
-  filterSelectionChecked = false;
+  detailPanelType = 'multiple'  
   lastDetailPanelRow = undefined;
   lastEditingRow = undefined;
   orderBy = -1;
@@ -38,6 +37,8 @@ export default class DataManager {
   sorted = false;
   paged = false;
 
+  rootGroupsIndex = {};
+
   constructor() {
   }
 
@@ -58,6 +59,7 @@ export default class DataManager {
   setColumns(columns) {
     this.columns = columns.map((columnDef, index) => {
       columnDef.tableData = {
+        columnOrder: index,
         filterValue: columnDef.defaultFilter,
         groupOrder: columnDef.defaultGroupOrder,
         groupSort: columnDef.defaultGroupSort || 'asc',
@@ -103,11 +105,6 @@ export default class DataManager {
 
   changeFilterValue(columnId, value) {
     this.columns[columnId].tableData.filterValue = value;
-    this.filtered = false;
-  }
-
-  changeFilterSelectionChecked(checked) {
-    this.filterSelectionChecked = checked;
     this.filtered = false;
   }
 
@@ -271,6 +268,11 @@ export default class DataManager {
     }
     else if (result.destination.droppableId === "groups" && result.source.droppableId === "headers") {
       const newGroup = this.columns.find(c => c.tableData.id == result.draggableId);
+
+      if(newGroup.grouping === false || !newGroup.field){
+        return;
+      }
+      
       groups.splice(result.destination.index, 0, newGroup);
     }
     else if (result.destination.droppableId === "headers" && result.source.droppableId === "groups") {
@@ -279,7 +281,30 @@ export default class DataManager {
       groups.splice(result.source.index, 1);
     }
     else if (result.destination.droppableId === "headers" && result.source.droppableId === "headers") {
-      // Column reordering
+      start = Math.min(result.destination.index, result.source.index);
+      const end = Math.max(result.destination.index, result.source.index);
+
+      const colsToMov = this.columns
+        .sort((a, b) => a.tableData.columnOrder - b.tableData.columnOrder)
+        .filter(column => column.tableData.groupOrder === undefined)
+        .slice(start, end + 1);
+
+      if (result.destination.index < result.source.index) {
+        // Take last and add as first
+        const last = colsToMov.pop();
+        colsToMov.unshift(last);
+      }
+      else {
+        // Take first and add as last
+        const last = colsToMov.shift();
+        colsToMov.push(last);
+      }
+
+      for (let i = 0; i < colsToMov.length; i++) {
+        colsToMov[i].tableData.columnOrder = start + i;
+      }
+
+      return;
     }
     else {
       return;
@@ -324,15 +349,19 @@ export default class DataManager {
   }
 
   findGroupByGroupPath(renderData, path) {
-    const data = { groups: renderData };
+    const data = { groups: renderData, groupsIndex: this.rootGroupsIndex };
 
     const node = path.reduce((result, current) => {
       if (!result) {
         return undefined;
       }
 
-      const group = result.groups.find(a => a.value === current);
-      return group;
+      if (result.groupsIndex[current] !== undefined) {
+        return result.groups[result.groupsIndex[current]];
+      }
+      return undefined;
+      // const group = result.groups.find(a => a.value === current);
+      // return group;
     }, data);
     return node;
   }
@@ -445,12 +474,6 @@ export default class DataManager {
 
     this.filteredData = [...this.data];
 
-    // if (this.filterSelectionChecked) {
-    //   this.filterData = this.filterData.filter(row => {
-    //     return row.tableData.checked;
-    //   });
-    // }
-
     if (this.applyFilters) {
       this.columns.filter(columnDef => columnDef.tableData.filterValue).forEach(columnDef => {
         const { lookup, type, tableData } = columnDef;
@@ -562,29 +585,35 @@ export default class DataManager {
       .filter(col => col.tableData.groupOrder > -1)
       .sort((col1, col2) => col1.tableData.groupOrder - col2.tableData.groupOrder);
 
-    const subData = tmpData.reduce((result, current) => {
-
+    const subData = tmpData.reduce((result, currentRow) => {
       let object = result;
       object = groups.reduce((o, colDef) => {
-        const value = current[colDef.field] || byString(current, colDef.field);
-        let group = o.groups.find(g => g.value === value);
+        const value = currentRow[colDef.field] || byString(currentRow, colDef.field);
+
+        let group;
+        if (o.groupsIndex[value] !== undefined) {
+          group = o.groups[o.groupsIndex[value]];
+        }
+
         if (!group) {
           const path = [...(o.path || []), value];
-          let oldGroup = this.findGroupByGroupPath(this.groupedData, path) || {};
+          let oldGroup = this.findGroupByGroupPath(this.groupedData, path) || { isExpanded: (this.defaultExpanded ? true : false) };
 
-          group = { value, groups: [], data: [], isExpanded: oldGroup.isExpanded, path: path };
+          group = { value, groups: [], groupsIndex: {}, data: [], isExpanded: oldGroup.isExpanded, path: path };
           o.groups.push(group);
+          o.groupsIndex[value] = o.groups.length - 1;
         }
         return group;
       }, object);
 
-      object.data.push(current);
+      object.data.push(currentRow);
 
       return result;
-    }, { groups: [] });
+    }, { groups: [], groupsIndex: {} });
 
     this.groupedData = subData.groups;
     this.grouped = true;
+    this.rootGroupsIndex = subData.groupsIndex;
   }
 
   treefyData() {
